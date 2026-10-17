@@ -1,0 +1,34 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CSV設備稼働率計算ツール | 電子工作とPythonの技術ノート</title><meta name="description" content="CSVのRUNNING・STOPPED・UNKNOWN状態ログから停止時間と稼働率を無料で集計。データはブラウザ内だけで処理されます。"><link rel="stylesheet" href="style.css"></head><body><header class="mast"><div class="wrap"><div class="label">FREE LOCAL CSV TOOL</div><h1>設備稼働率CSV計算ツール</h1><p>データをサーバーへ送らずに、時間配分を手元で確認</p></div></header><div class="wrap"><nav><a href="index.html">記事一覧</a><a href="availability-vs-oee.html">稼働率の定義</a><a href="https://x.com/clkevd">Xの更新情報</a></nav></div><main class="wrap"><div class="notice"><strong>使い方</strong><p>timestamp,statusの2列を持つCSVを貼り付けるか、ローカルのCSVを選択してください。最終イベントの後の状態は「観測終了時刻」まで継続したと仮定します。試験データの例もあります。</p><p>このページは計算をブラウザ内で完結させます。外部へのアップロード処理はありません。入力に機密情報・個人情報を含めないでください。</p></div><article class="prose"><label for="file">ローカルCSVファイル（任意）</label><input type="file" accept=".csv,text/csv" id="file"><label for="csv">CSV内容</label><textarea id="csv" rows="7" spellcheck="false">timestamp,status
+2026-10-15T09:00:00+09:00,RUNNING
+2026-10-15T09:30:00+09:00,STOPPED
+2026-10-15T10:00:00+09:00,UNKNOWN</textarea><label for="end">観測終了時刻（タイムゾーン必須）</label><input id="end" value="2026-10-15T10:15:00+09:00"><p><button id="run" type="button">稼働率を計算する</button></p><p class="small muted" id="status" role="status">計算前</p><section id="results" aria-live="polite"></section><h2>計算式</h2><p>稼働率 = RUNNING時間 ÷ (RUNNING時間 + STOPPED時間) × 100。UNKNOWNは分母から除外し、不明時間として別に表示します。観測時間ベースの稼働率とは異なり、OEEでもありません。</p><h2>安全上の注意</h2><p>状態ログに欠測や誤記録があれば、計算が正しくても結果は実際の設備と一致しません。情報表示・学習目的のみで使用してください。制御系・設備安全・生産保証の判断には使用しないでください。</p><p><a href="index.html">← 記事一覧へ戻る</a></p></article></main><footer><div class="wrap"><p>Amazonのアソシエイトとして、電子工作とPythonの技術ノートは適格販売により収入を得ています。</p><p>この計算ツールにアフィリエイトリンクは含みません。</p><p><a href="about.html">運営方針</a> · <a href="privacy.html">プライバシー</a></p></div></footer>
+<script>
+"use strict";
+function calculateCSV(raw,endText){
+ const lines=raw.replace(/^\uFEFF/,"").trim().split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+ if(lines.length<2)throw Error("ヘッダーとデータ行が必要です");
+ const header=lines[0].split(",").map(x=>x.trim().toLowerCase());
+ if(header.length!==2||header[0]!=="timestamp"||header[1]!=="status")throw Error("CSVの列はtimestamp,statusの順にしてください");
+ const iso=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+ const parse=s=>{if(!iso.test(s))throw Error("日時はISO 8601のタイムゾーン付き形式にしてください: "+s); const ms=Date.parse(s);if(!Number.isFinite(ms))throw Error("日時の解釈に失敗しました: "+s);return ms};
+ const events=lines.slice(1).map((line,i)=>{const parts=line.split(",").map(x=>x.trim());if(parts.length!==2)throw Error("行"+(i+2)+"は列数が違います");let [time,state]=parts;state=state.toUpperCase();if(!["RUNNING","STOPPED","UNKNOWN"].includes(state))throw Error("行"+(i+2)+"の状態が不正です");return {ms:parse(time),time,state}});
+ for(let i=1;i<events.length;i++)if(events[i].ms<=events[i-1].ms)throw Error("時刻が逆順または重複しています（行"+(i+2)+"）");
+ const endMs=parse(endText.trim());if(endMs<=events[events.length-1].ms)throw Error("終了時刻は最後のイベントより後にしてください");
+ const totals={RUNNING:0,STOPPED:0,UNKNOWN:0}, intervals=[];
+ for(let i=0;i<events.length;i++){const cur=events[i],stop=i+1<events.length?events[i+1].ms:endMs;const d=stop-cur.ms;if(d<=0)throw Error("0秒以下の区間があります");totals[cur.state]+=d;intervals.push({state:cur.state,minutes:d/60000})}
+ const known=totals.RUNNING+totals.STOPPED, total=known+totals.UNKNOWN;
+ return {totals,known,total,intervals,rate:known?100*totals.RUNNING/known:null,unknownRatio:100*totals.UNKNOWN/total};
+}
+function render(r){
+ const box=document.getElementById("results");
+ box.replaceChildren();
+ const h=document.createElement("h2");h.textContent="集計結果";box.appendChild(h);
+ const rows=[["稼働率（状態判明時間ベース）",r.rate===null?"計算不可":r.rate.toFixed(1)+"%"],["RUNNING時間",(r.totals.RUNNING/60000).toFixed(1)+"分"],["STOPPED時間",(r.totals.STOPPED/60000).toFixed(1)+"分"],["UNKNOWN時間",(r.totals.UNKNOWN/60000).toFixed(1)+"分"],["不明時間の割合",r.unknownRatio.toFixed(1)+"%"]];
+ const table=document.createElement("table");for(const [k,v] of rows){const tr=document.createElement("tr"),td1=document.createElement("th"),td2=document.createElement("td");td1.textContent=k;td2.textContent=v;tr.append(td1,td2);table.appendChild(tr)}box.appendChild(table);
+ const p=document.createElement("p");p.textContent="状態の時間配分（全"+(r.total/60000).toFixed(1)+"分）";box.appendChild(p);
+ const outer=document.createElement("div");outer.style.cssText="display:flex;height:36px;width:100%;overflow:hidden;border-radius:7px";for(const [k,color] of [["RUNNING","#25856a"],["STOPPED","#d96b53"],["UNKNOWN","#9aa3b1"]]){const inner=document.createElement("div");inner.title=k+": "+(r.totals[k]/60000).toFixed(1)+"分";inner.style.cssText="height:36px;background:"+color+";width:"+(100*r.totals[k]/r.total)+"%";outer.appendChild(inner)}box.appendChild(outer);
+ const note=document.createElement("p");note.className="small muted";note.textContent="緑=RUNNING、橙=STOPPED、灰=UNKNOWN。CSVの欠損を補正する機能はありません。";box.appendChild(note)
+}
+document.getElementById("run").addEventListener("click",()=>{try{const r=calculateCSV(document.getElementById("csv").value,document.getElementById("end").value);render(r);document.getElementById("status").textContent="計算できました。"}catch(e){document.getElementById("results").replaceChildren();document.getElementById("status").textContent="入力エラー: "+e.message}});
+document.getElementById("file").addEventListener("change",async e=>{const f=e.target.files[0];if(!f)return;if(f.size>2*1024*1024){document.getElementById("status").textContent="ファイルが大きすぎます（上限2MB）";return}document.getElementById("csv").value=await f.text();document.getElementById("status").textContent="ローカルCSVを読み込みました。まだサーバーへ送信していません。"});
+</script></body></html>

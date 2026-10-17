@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://chattojipi888-oss.github.io/sitemap.xml
