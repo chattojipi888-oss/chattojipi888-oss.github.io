@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>日本語CSVの文字化けを防ぐ：UTF-8 BOMとCP932をPythonで読み分ける | 電子工作とPythonの技術ノート</title>
+<meta name="description" content="Python標準ライブラリでUTF-8 BOM付きCSVとCP932の日本語CSVを読み分ける例、模擬データの18件のテスト、文字コード自動判定の限界を解説。">
+<link rel="stylesheet" href="style.css"></head><body>
+<header class="mast"><div class="wrap"><div class="label">ELECTRONICS · PYTHON · MAKER</div>
+<h1><a href="index.html">電子工作とPythonの技術ノート</a></h1><p>作ったコードを検証し、仕組みをわかりやすく解説</p></div></header>
+<div class="wrap"><nav><a href="index.html">記事一覧</a><a href="csv-uptime-calculator.html">無料CSV計算ツール</a><a href="https://x.com/clkevd" rel="noopener noreferrer">X（更新情報）</a><a href="about.html">運営方針</a></nav></div>
+<main class="wrap"><article class="prose"><span class="tag">技術ノート · 2026-10-18</span>
+<h1>日本語CSVの文字化けを防ぐ：UTF-8 BOMとCP932をPythonで読み分ける</h1>
+<p class="muted">CSVを開く前に文字コードを決める。日本語ヘッダーの「見つからない」を減らす小さな実装例。</p>
+<div class="notice">この記事の動作確認はMac上のPythonと模擬CSVによるものです。実顧客データ・あらゆるCSV形式での動作を保証しません。</div>
+<section><h2>なぜ「分類」列が見つからないのか</h2>
+<p>CSVは文字コードがファイル内で明示されない場合があります。日本語Windows環境で作成されたCSVはCP932の場合があり、UTF-8で読み込むとデコードエラーが起きることがあります。一方、UTF-8の先頭にBOMが付いたCSVを単なる<code>utf-8</code>で読むと、最初のヘッダーが<code>\ufeff分類</code>になり、<code>分類</code>と一致しません。</p>
+<p><code>utf-8-sig</code>で読み込むと、UTF-8 BOMがある場合は除去し、BOMのない通常のUTF-8も読み込めます。</p></section>
+<section><h2>標準ライブラリだけで読み分ける例</h2>
+<pre>from pathlib import Path
+import csv
+import io
+
+def read_csv(path):
+    raw = Path(path).read_bytes()
+    for encoding in ("utf-8-sig", "cp932"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError("UTF-8 / CP932 として読めません")
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    return list(reader)
+
+# read_csv("sample.csv")  # 辞書のリストを返す</pre>
+<p>この例は「UTF-8（BOMあり・なし）を優先し、失敗したらCP932」の<strong>簡易フォールバック</strong>です。両方でデコード可能なバイト列では正しい文字コードを確定できません。文字化けが疑われる場合は、生成元のソフトウェアで保存形式を確認し、明示的にエンコーディングを指定してください。</p>
+<p>また、読み込めてもCSVとして妥当とは限りません。区切り文字・列数・重複ヘッダー・空行・改行・数値の形式は別途検証が必要です。上の短い例には入力サイズ制限もないため、外部から受け取った大容量ファイルを無条件に処理しないでください。</p></section>
+<section><h2>件数と金額を集計するときの注意</h2>
+<p><code>csv.DictReader</code>で行を辞書として扱い、<code>collections.defaultdict</code>などで分類別に件数を数えられます。金額は<code>float</code>ではなく<code>decimal.Decimal</code>を用いると、10進数の表現誤差を避けやすくなります。ただし、<code>NaN</code>や<code>Infinity</code>などの特殊値は明示的に拒否し、桁数や指数にも入力上限を設けることが大切です。</p>
+<pre>入力（UTF-8 BOM付きでも可）:
+分類,金額
+部品,100
+工具,50
+部品,20
+
+期待する分類別結果:
+工具: 1件, 合計50
+部品: 2件, 合計120</pre>
+<p>表計算ソフトでCSVを開く場合、<code>=</code>、<code>+</code>、<code>-</code>、<code>@</code>で始まる文字列が式として扱われる危険にも注意します。文字列セルの出力を適切にエスケープし、データを式として実行させない設計にします。</p></section>
+<section><h2>手元のテストで確認した範囲</h2>
+<p>個人制作の分類集計CLIをMac上で2026年10月18日に実行し、<strong>18件の自動テストが成功</strong>しました。UTF-8 BOM、CP932、空欄分類、重複ヘッダー、列数不一致、不正数値、NaN/Infinity、CSV数式注入のエスケープ、入力ファイルの上書き防止、数値桁数などを含みます。</p>
+<p>このCLIは入力上限を10MiB・50列・5000データ行とし、失敗時に既存出力を置き換えない設計です。これらはこの試作品の<strong>仕様上の上限</strong>であり、PythonやCSVの一般的な制限ではありません。この記事の短いサンプルコードは、その完全なCLI実装ではありません。</p>
+<p>テスト成功は用意した模擬入力についての結果です。実設備・顧客環境・全ての文字コードを検証したものではありません。</p></section>
+<section><h2>確認の順序</h2><ol>
+<li>元CSVのバックアップを残し、作成元と保存時の文字コードを確認する。</li>
+<li>ヘッダーの先頭にBOMが混入していないかを確認する。</li>
+<li>数行の模擬CSVで分類・合計値を照合し、不正入力がエラーになることも試す。</li>
+<li>実データを扱う場合は機密性・許可・保存場所・ファイルサイズ上限を先に決める。</li>
+</ol></section>
+<h2>参考資料（一次資料）</h2><ul>
+<li><a href="https://docs.python.org/ja/3/library/codecs.html#encodings-and-unicode" rel="noopener noreferrer">Python公式：codecs・文字コード</a></li>
+<li><a href="https://docs.python.org/ja/3/library/csv.html" rel="noopener noreferrer">Python公式：csvモジュール</a></li>
+<li><a href="https://docs.python.org/ja/3/library/decimal.html" rel="noopener noreferrer">Python公式：decimalモジュール</a></li>
+<li><a href="https://docs.python.org/ja/3/library/unittest.html" rel="noopener noreferrer">Python公式：unittest</a></li>
+</ul>
+<p><a href="python-csv-validation.html">関連：CSVの入力検証6項目</a> · <a href="index.html">← 記事一覧へ戻る</a></p>
+</article></main>
+<footer><div class="wrap"><p>Amazonのアソシエイトとして、電子工作とPythonの技術ノートは適格販売により収入を得ています。</p>
+<p>広告・アフィリエイトがある記事では広告を明記します。個別商品の実使用がない場合、使用したとは表現しません。</p>
+<p><a href="about.html">運営方針</a> · <a href="privacy.html">プライバシー</a> · <a href="https://github.com/chattojipi888-oss/chattojipi888-oss.github.io/issues">お問い合わせ（GitHub Issues）</a></p><p>© 2026 電子工作とPythonの技術ノート</p></div></footer></body></html>
