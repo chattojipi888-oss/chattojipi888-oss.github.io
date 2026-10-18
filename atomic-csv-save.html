@@ -1,0 +1,57 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Pythonの一時ファイルとos.replaceによるCSVスナップショットの安全な更新方法"><title>設備監視CSVを途中で壊さない | 電子工作とPythonの技術ノート</title><link rel="stylesheet" href="style.css"></head><body><header><a href="index.html">電子工作とPythonの技術ノート</a></header><main><article>
+<h1>設備監視CSVを途中で壊さない：Pythonの一時ファイルとos.replace</h1>
+<h2>なぜ直接上書きしないのか</h2>
+<p>`open(&quot;equipment.csv&quot;, &quot;w&quot;)` は既存の内容を切り詰めます。途中でセンサ取得に失敗したり、入力に不正値が見つかったりすると、半端なCSVが残り得ます。監視画面がそのCSVを読む場合、正常な前回のデータまで失う可能性があります。</p>
+<p>代わりに、同じディレクトリに一時ファイルを作成し、全レコードを検証して書き終わってから `os.replace()` で置き換えます。Python公式資料では、POSIX上で成功した置換は原子的とされています。別ファイルシステム間では失敗し得るため、一時ファイルの作成先を対象と同じディレクトリにします。</p>
+<h2>実装</h2>
+<p>公開した <a href="atomic_csv_save.py">atomic_csv_save.py</a> に、Python標準ライブラリのみで動く `write_snapshot(path, records)` を収録しました。主要な処理は次のとおりです。</p>
+<pre><code>
+fd, temp_path = tempfile.mkstemp(dir=target.parent)
+
+try:
+
+    with os.fdopen(fd, &quot;w&quot;, encoding=&quot;utf-8&quot;, newline=&quot;&quot;) as stream:
+
+        writer = csv.writer(stream, lineterminator=&quot;\n&quot;)
+
+        writer.writerow([&quot;timestamp&quot;, &quot;status&quot;])
+
+        # ここで各行を検証し、writer.writerow(...) で書き込む
+
+        stream.flush()
+
+        os.fsync(stream.fileno())
+
+    os.replace(temp_path, target)
+
+except BaseException:
+
+    try:
+
+        os.unlink(temp_path)
+
+    except FileNotFoundError:
+
+        pass
+
+    raise
+
+</code></pre>
+<p>この抜粋は処理の概略です。実行する場合は検証を含む<a href="atomic_csv_save.py">完全版コード</a>を使用してください。<a href="test_atomic_csv_save.py">テストコード</a>も公開しています。完全版では入力日時をタイムゾーン付き `datetime` に限定し、状態を `RUNNING`、`STOPPED`、`UNKNOWN` の3種類に制限します。日時は秒精度で出力するため、ミリ秒が必要な場合は仕様変更が必要です。</p>
+<h2>動作確認</h2>
+<p>2026年10月18日、MacのPython 3.12で `python3 -m unittest discover -p &#x27;test_atomic_csv_save.py&#x27; -v` を実行し、6件すべて成功しました。確認したのは新規保存、全件置換、不正な状態値、タイムゾーンなし日時、途中例外、空レコードです。エラー時に前回のCSVが残り、一時ファイルが削除されることも確認しました。</p>
+<p>これは模擬データの単体テストであり、実PLCやネットワークドライブ、Windowsのファイルロック、電源断の試験ではありません。</p>
+<h2>実運用の注意</h2>
+<p>• `os.replace()` は既存ファイルを上書きします。バックアップや履歴が必要なら別途保存してください。</p>
+<p>• 複数の書き手が同時に更新すると、最後の更新で前の内容が失われ得ます。単一ライターや排他制御が必要です。</p>
+<p>• `flush()` と `os.fsync()` を行っても、親ディレクトリの同期やストレージの特性まで含む停電耐性は保証できません。</p>
+<p>• 置換後のファイルの権限・所有者・ACLは旧ファイルと同一とは限りません。</p>
+<p>• 入力件数の上限、時刻の単調増加、設備ID、ファイルサイズ上限などは別途検証してください。</p>
+<p>• 既に開いている読み手は旧ファイルを読み続ける場合があります。更新を確認する際は開き直してください。</p>
+<h2>一次資料</h2>
+<p>• Python公式 `os.replace`：<a href="https://docs.python.org/3/library/os.html#os.replace" rel="noopener noreferrer">https://docs.python.org/3/library/os.html#os.replace</a></p>
+<p>• Python公式 `os.fsync`：<a href="https://docs.python.org/3/library/os.html#os.fsync" rel="noopener noreferrer">https://docs.python.org/3/library/os.html#os.fsync</a></p>
+<p>• Python公式 `tempfile.mkstemp`：<a href="https://docs.python.org/3/library/tempfile.html#tempfile.mkstemp" rel="noopener noreferrer">https://docs.python.org/3/library/tempfile.html#tempfile.mkstemp</a></p>
+<p>• Python公式 `csv.writer`：<a href="https://docs.python.org/3/library/csv.html#csv.writer" rel="noopener noreferrer">https://docs.python.org/3/library/csv.html#csv.writer</a></p>
+<p>関連記事（既公開）：設備の稼働・停止を記録するCSVの設計（`csv-state-logging.html`）。</p>
+<p>※コード抜粋は実装の概略です。動作環境や権限、同時書き込みには注意してください。</p><p><a href="index.html">記事一覧へ戻る</a></p></article></main></body></html>
