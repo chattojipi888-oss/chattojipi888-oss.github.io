@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PythonでCSVの列ずれ・重複ヘッダーを検出する | 電子工作とPythonの技術ノート</title>
+<meta name="description" content="設備ログCSVで列数ずれ・重複ヘッダー・不正クォートを検出するPython標準ライブラリ実装。17件のテスト結果と限界も説明。">
+<link rel="stylesheet" href="style.css"></head><body>
+<header class="mast"><div class="wrap"><div class="label">ELECTRONICS · PYTHON · MAKER</div><h1><a href="index.html">電子工作とPythonの技術ノート</a></h1><p>作ったコードを検証し、仕組みをわかりやすく解説</p></div></header>
+<div class="wrap"><nav><a href="index.html">記事一覧</a><a href="csv-uptime-calculator.html">無料CSV計算ツール</a><a href="https://x.com/clkevd" rel="noopener noreferrer">X（更新情報）</a><a href="about.html">運営方針</a></nav></div>
+<main class="wrap"><article class="prose"><span class="tag">技術ノート · 2026-10-18</span>
+<h1>PythonでCSVの列ずれ・重複ヘッダーを検出する</h1>
+<p class="muted">設備監視の <code>timestamp,status</code> ログを、集計する前に構造検査する。</p>
+<div class="notice">Mac上のPythonと模擬CSVで検証したサンプルです。実設備・実運用・安全制御では未検証です。ログを制御信号の唯一の根拠にしないでください。</div>
+<section><h2>CSVを読めても、正しく読めたとは限らない</h2>
+<p>例えば <code>timestamp,status</code> を想定しているのに、途中から <code>timestamp,status,note</code> の3列になったら、後段の稼働率集計に誤ったデータが入る可能性があります。Pythonの <code>csv.DictReader</code> は列が多いと余りを <code>restkey</code>（既定値は <code>None</code>）に、少ないと不足値を <code>restval</code>（既定値は <code>None</code>）で表現します。エラーとして止めたい場合は、追加の検証が必要です。</p>
+<p>この例では <code>csv.reader(strict=True)</code> を使い、<strong>ヘッダーの重複・列名と順序・各レコードの列数・空欄・件数上限</strong>を明示的に確認します。<code>strict=True</code> は不正なCSV構文に対するエラーであり、列数の一致を保証する設定ではありません。</p></section>
+<section><h2>確認用CSV</h2>
+<pre>timestamp,status
+2026-10-18T10:00:00+09:00,RUNNING
+2026-10-18T10:05:00+09:00,STOPPED</pre>
+<p>この2レコードなら成功します。以下のように3列目が混入すると、行数・物理行番号を含むエラーで停止します。</p>
+<pre>timestamp,status
+2026-10-18T10:00:00+09:00,RUNNING,unexpected</pre></section>
+<section><h2>検証コード（標準ライブラリのみ）</h2>
+<p><code>csv_schema_check.py</code> として保存します。<code>utf-8-sig</code> はUTF-8 BOM付きとBOMなしの両方を読み込めますが、CP932は対象外です。</p>
+<pre>&quot;&quot;&quot;CSV設備ログの列数・ヘッダー検証例（標準ライブラリのみ）。
+
+CSVの構造だけを検査する。時刻順序や状態値の意味は別途検証が必要。
+&quot;&quot;&quot;
+import csv
+from pathlib import Path
+
+
+def validate_csv(path, expected=(&quot;timestamp&quot;, &quot;status&quot;), *,
+                 max_bytes=1_048_576, max_rows=1000):
+    &quot;&quot;&quot;検証済みの辞書行を返す。不正入力は ValueError にする。&quot;&quot;&quot;
+    path = Path(path)
+    if path.stat().st_size &gt; max_bytes:
+        raise ValueError(&quot;CSVがサイズ上限を超えています&quot;)
+    if not expected or len(set(expected)) != len(expected):
+        raise ValueError(&quot;期待するヘッダーの指定が不正です&quot;)
+    records = []
+    try:
+        with path.open(&quot;r&quot;, encoding=&quot;utf-8-sig&quot;, newline=&quot;&quot;) as f:
+            reader = csv.reader(f, strict=True)
+            header = next(reader, None)
+            if not header:
+                raise ValueError(&quot;ヘッダーがありません&quot;)
+            if len(header) != len(set(header)):
+                raise ValueError(&quot;ヘッダー名が重複しています&quot;)
+            if header != list(expected):
+                raise ValueError(f&quot;列名または順序が違います: {header!r}&quot;)
+            for row in reader:
+                if len(row) != len(header):
+                    raise ValueError(
+                        f&quot;CSV列数不一致（物理行 {reader.line_num}）:&quot;
+                        f&quot; 期待{len(header)}列、実際{len(row)}列&quot;
+                    )
+                if any(not cell.strip() for cell in row):
+                    raise ValueError(f&quot;空欄があります（物理行 {reader.line_num}）&quot;)
+                if len(records) &gt;= max_rows:
+                    raise ValueError(&quot;CSVが行数上限を超えています&quot;)
+                records.append(dict(zip(header, row)))
+    except (csv.Error, UnicodeError) as exc:
+        raise ValueError(f&quot;CSVを解析できません: {exc}&quot;) from exc
+    if not records:
+        raise ValueError(&quot;データ行がありません&quot;)
+    return records
+
+
+if __name__ == &quot;__main__&quot;:
+    import sys
+    if len(sys.argv) != 2:
+        raise SystemExit(&quot;使い方: python3 csv_schema_check.py 設備ログ.csv&quot;)
+    rows = validate_csv(sys.argv[1])
+    print(f&quot;構造チェック成功: {len(rows)}レコード&quot;)</pre>
+<p>実行例：<code>python3 csv_schema_check.py sample.csv</code>。正常時は <code>構造チェック成功: 2レコード</code> と表示します。</p>
+<p>列順の変更を許す運用なら <code>header != list(expected)</code> の判定を、列名集合の比較と辞書へのマッピングに置き換えます。ただし、列の意味を決めずに自動修復するのは避けてください。</p></section>
+<section><h2>テストと確認範囲</h2>
+<p>2026年10月18日にMac上のPython標準ライブラリ <code>unittest</code> で<strong>17件すべて成功</strong>しました。通常データ、UTF-8 BOM、クォートされたカンマと改行、CRLF、余分な列、欠けた列、重複ヘッダー、列順違い、空ファイル、ヘッダーのみ、空欄、不正な引用符、行数上限、ファイルサイズ上限、非UTF-8、誤った期待ヘッダーを検査しています。</p>
+<p>テストコマンド：<code>python3 -B -m unittest -v test_csv_schema_check.py</code>。上限はサンプル固有の<strong>1MiB・1000レコード</strong>です。<code>Path.stat()</code> によるサイズ確認は読み込み前の値なので、別プロセスが同時にファイルを更新する状況で厳密なサイズ保証にはなりません。</p></section>
+<section><h2>残る検証と運用上の注意</h2>
+<ul><li>日時の形式・タイムゾーン・時系列順序、状態値 <code>RUNNING</code>/<code>STOPPED</code> の妥当性は<strong>このコードでは未検証</strong>です。</li>
+<li><code>csv.reader</code> は空の物理行を通常スキップします。空行も異常扱いする場合は、別途検出ロジックを追加します。</li>
+<li><code>reader.line_num</code> はCSVのレコード番号ではなく読み込んだ<strong>物理行数</strong>です。セル内に改行があれば一致しません。</li>
+<li>巨大なフィールド、ファイルの同時更新、符号化方式の誤認、CSV数式注入、機密データの扱いには追加対策が必要です。</li>
+<li>本番投入前に、実際のログ生成元のCSV仕様とテストデータを照合してください。</li></ul></section>
+<h2>一次資料</h2><ul>
+<li><a href="https://docs.python.org/ja/3/library/csv.html" rel="noopener noreferrer">Python公式：csv（reader / DictReader / strict / newline）</a></li>
+<li><a href="https://docs.python.org/ja/3/library/pathlib.html" rel="noopener noreferrer">Python公式：pathlib（Path.stat / Path.open）</a></li>
+<li><a href="https://docs.python.org/ja/3/library/unittest.html" rel="noopener noreferrer">Python公式：unittest</a></li></ul>
+<p><a href="python-csv-validation.html">関連：CSVの入力検証6項目</a> · <a href="csv-encoding-utf8-cp932.html">関連：日本語CSVの文字コード</a> · <a href="index.html">← 記事一覧へ戻る</a></p>
+</article></main><footer><div class="wrap"><p>Amazonのアソシエイトとして、電子工作とPythonの技術ノートは適格販売により収入を得ています。</p><p>広告・アフィリエイトがある記事では広告を明記します。個別商品の実使用がない場合、使用したとは表現しません。</p><p><a href="about.html">運営方針</a> · <a href="privacy.html">プライバシー</a> · <a href="https://github.com/chattojipi888-oss/chattojipi888-oss.github.io/issues">お問い合わせ（GitHub Issues）</a></p><p>© 2026 電子工作とPythonの技術ノート</p></div></footer></body></html>
