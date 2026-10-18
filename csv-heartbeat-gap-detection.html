@@ -1,0 +1,44 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="CSV設備監視の欠測候補と停止時間を混同しないためのPython標準ライブラリによる実装・テストと注意点"><title>CSV設備監視の欠測候補を検出するPython例 | 電子工作とPythonの技術ノート</title><link rel="stylesheet" href="style.css"></head><body><header class="mast"><div class="wrap"><div class="label">ELECTRONICS · PYTHON · MAKER</div><h1><a href="index.html">電子工作とPythonの技術ノート</a></h1></div></header><main class="wrap"><article class="prose"><span class="tag">技術ノート · 2026-10-18</span><h1>CSV設備監視で「欠測」と「設備停止」を混同しない</h1><p class="notice">模擬データによる検証例です。安全制御や実設備の故障診断に使用しないでください。</p><h2>問題と考え方</h2>
+<p>設備状態を10秒ごとにCSV記録する場合、00:00:10の次が00:00:40であっても、設備が30秒停止していたとは断定できない。ログが存在しないことは「通信・記録・時刻系のどこかに欠測の疑いがある」ことしか意味しない。</p>
+<p>定期間隔を <code>T=10秒</code>、判定しきい値を <code>1.5T=15秒</code> とする。隣接する観測時刻の差が15秒を超えた場合、<code>前回観測+T</code> から <code>今回観測</code> までを欠測候補とする。00:00:10→00:00:40なら欠測候補は20秒。停止時間に算入しない。</p>
+<h2>CSV例</h2>
+<pre><code>timestamp,status
+2026-10-18T00:00:00+09:00,RUNNING
+2026-10-18T00:00:10+09:00,RUNNINGリでの最小実装</h2>
+<pre><code>import csv
+from datetime import datetime, timezone, timedelta
+
+def gaps(csv_path, interval=10, factor=1.5):
+    if interval &lt;= 0 or factor &lt;= 1:
+        raise ValueError(&quot;invalid settings&quot;)
+    result, previous = [], None
+    with open(csv_path, encoding=&quot;utf-8-sig&quot;, newline=&quot;&quot;) as f:
+        rows = csv.DictReader(f)
+        if not rows.fieldnames or not {&quot;timestamp&quot;, &quot;status&quot;} &lt;= set(rows.fieldnames):
+            raise ValueError(&quot;timestamp,status required&quot;)
+        for line, row in enumerate(rows, 2):
+            t = datetime.fromisoformat(row[&quot;timestamp&quot;])
+            if t.tzinfo is None or t.utcoffset() is None:
+                raise ValueError(f&quot;line {line}: UTC offset required&quot;)
+            if row[&quot;status&quot;] not in {&quot;RUNNING&quot;, &quot;STOPPED&quot;, &quot;UNKNOWN&quot;}:
+                raise ValueError(f&quot;line {line}: invalid status&quot;)
+            t = t.astimezone(timezone.utc)
+            if previous is not None:
+                delta = (t - previous).total_seconds()
+                if delta &lt;= 0:
+                    raise ValueError(f&quot;line {line}: timestamps not increasing&quot;)
+                if delta &gt; interval * factor:
+                    result.append((previous + timedelta(seconds=interval), t, delta - interval))
+            previous = t
+    return result</code></pre>
+<p>実行例： <code>print(gaps(&quot;sample_heartbeat.csv&quot;))</code>。この短い実装は説明用で、業務運用には入力サイズ上限や監査ログなどの追加対策が必要です。</p>
+<h2>検証</h2>
+<p>2026-10-18、Pythonのunittestで8/8件成功：20秒の欠測、正常間隔、異なるUTCオフセット、重複時刻、オフセットなし、状態値不正、ヘッダー不足、設定値不正。模擬CSVのみで、実機検証はしていない。</p>
+<h2>注意</h2>
+<p>これは欠測候補の推定であり、実際の通信断・設備停止・センサ故障の原因判定ではない。最終行より後の欠測は観測終了時刻がないため扱わない。時刻同期と計測仕様を確認し、安全制御には利用しない。機密設備ログを外部サービスに無断送信しない。</p>
+<h2>一次資料</h2>
+<ul>
+<li>Python公式 csv: https://docs.python.org/3/library/csv.html</li>
+<li>Python公式 datetime: https://docs.python.org/3/library/datetime.html</li>
+<li>Python公式 unittest: https://docs.python.org/3/library/unittest.html</li>
+</ul><p><a href="index.html">← 記事一覧へ戻る</a></p></article></main></body></html>
