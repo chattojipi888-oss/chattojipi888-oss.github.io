@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pythonで設備CSVの状態変化だけを抽出する：20件のテスト付き | 電子工作とPythonの技術ノート</title>
+<meta name="description" content="RUNNING/STOPPED/UNKNOWNの周期ログから状態が変わった観測行だけを抽出。Python標準ライブラリのコード、20件のテスト、欠測や時刻の注意点を公開。">
+<link rel="stylesheet" href="style.css"></head><body>
+<header class="mast"><div class="wrap"><div class="label">ELECTRONICS · PYTHON · MAKER</div><h1><a href="index.html">電子工作とPythonの技術ノート</a></h1><p>作ったコードを検証し、仕組みをわかりやすく解説</p></div></header>
+<div class="wrap"><nav><a href="index.html">記事一覧</a><a href="csv-uptime-calculator.html">無料CSV計算ツール</a><a href="https://x.com/clkevd" rel="noopener noreferrer">X（更新情報）</a><a href="about.html">運営方針</a></nav></div>
+<main class="wrap"><article class="prose"><span class="tag">Python · CSV設備監視 · 2026-10-19</span>
+<h1>Pythonで設備CSVの状態変化だけを抽出する</h1>
+<p class="muted">10秒周期の「同じ状態の繰り返し」を、観測された変化だけのCSVへ変換する。標準ライブラリのみ・模擬データの自動テスト20件。</p>
+<div class="notice"><strong>重要：</strong>抽出される時刻は「変化を観測した時刻」であり、設備が実際に切り替わった瞬間とは限りません。欠測や通信断を検出するコードではありません。安全制御・故障診断・実機の状態保証には使用しないでください。</div>
+<section><h2>入力と出力</h2>
+<p>設備監視では、定周期に状態を記録すると同じ値の行が増えます。状態の変化を追うだけなら、最初の観測行と、直前の行から値が変わった行を残す方法があります。</p>
+<p><strong>入力（input.csv）</strong></p><pre>timestamp,status
+2026-10-18T09:00:00+09:00,RUNNING
+2026-10-18T09:00:10+09:00,RUNNING
+2026-10-18T09:00:20+09:00,STOPPED
+2026-10-18T09:00:30+09:00,STOPPED
+2026-10-18T09:00:40+09:00,UNKNOWN</pre>
+<p><strong>出力（events.csv）</strong>：UTCに統一し、最初の観測と状態の切り替わりだけを残します。</p>
+<pre>timestamp,status
+2026-10-18T00:00:00+00:00,RUNNING
+2026-10-18T00:00:20+00:00,STOPPED
+2026-10-18T00:00:40+00:00,UNKNOWN</pre>
+<p>5件の観測から3件を残す例です。これは<strong>イベントの確定記録ではなく観測の要約</strong>です。特に最初の行は「その時点で観測した状態」であって「その時刻に切り替わった」という意味ではありません。</p></section>
+<section><h2>ダウンロード・実行方法</h2>
+<p>Python 3の標準ライブラリだけを使用します。<a href="state_change_extract.py">実装コード（state_change_extract.py）</a> と <a href="test_state_change_extract.py">自動テスト（test_state_change_extract.py）</a> を同じフォルダに保存してください。</p>
+<pre>python3 state_change_extract.py input.csv events.csv
+python3 -B -m unittest -v test_state_change_extract.py</pre>
+<p>出力ファイルが既にある場合は上書きせず <code>FileExistsError</code> で終了します。元CSVも書き換えません。出力時刻はUTCのISO形式です。Excelで扱う際は表示時差に注意してください。</p></section>
+<section><h2>実装の要点</h2>
+<p>CSVのヘッダーを <code>timestamp,status</code> に固定し、状態値を <code>RUNNING</code>、<code>STOPPED</code>、<code>UNKNOWN</code> の3種類に限定します。<code>datetime.fromisoformat()</code> で日時を読み、UTCオフセットを必須にしたうえでUTCに正規化します。</p>
+<pre><code>moment = datetime.fromisoformat(stamp)
+if moment.tzinfo is None or moment.utcoffset() is None:
+    raise ValueError("UTC offset required")
+moment = moment.astimezone(timezone.utc)
+if previous_time is not None and moment &lt;= previous_time:
+    raise ValueError("timestamps must strictly increase")
+if previous_status is None or status != previous_status:
+    changes.append((moment, status))</code></pre>
+<p>異なるオフセットの同一瞬間を正しく比較し、重複時刻・時刻逆行は例外にします。<code>csv.reader(..., strict=True)</code>、<code>newline=""</code>、<code>utf-8-sig</code> を使用し、引用符エラー・列数不一致・BOM付きUTF-8も扱います。<code>Path.open("x")</code> は既存の出力を保護します。</p>
+<p>処理は簡潔さを優先し、抽出結果をメモリに保持してから新規CSVに書き出します。大量ログには逐次書き出しと、別途バックアップ・容量制限・原子的保存の検討が必要です。</p></section>
+<section><h2>検証結果（2026年10月19日）</h2>
+<p>MacのPython <code>unittest</code> で<strong>20件すべて成功</strong>しました。状態の変化・同一状態・UNKNOWN保持・UTCオフセット差・1行だけの入力、重複/逆順時刻、タイムゾーン欠落、不正日時・状態・ヘッダー・列数・空欄・空データ・BOM・引用符不正・ファイルサイズ制限・新規出力・既存ファイル上書き防止・同一パス防止を模擬CSVで確認しました。</p>
+<p>ただし、実PLC・実センサ・現場ネットワークを使った動作検証はしていません。実環境での性能・耐障害性を保証するものではありません。</p></section>
+<section><h2>この方式が適さないケース</h2><ul>
+<li><strong>欠測がある：</strong>通信断の間に状態が何度も変わっても、この方式では復元できません。<a href="csv-heartbeat-gap-detection.html">欠測候補の検出</a>を別途行い、要約後も元データを保管してください。</li>
+<li><strong>正確な切替時刻が必要：</strong>10秒ごとのポーリングなら、観測された変化の実際の発生時刻には最大でサンプリング周期程度の不確かさがあります（遅延や時計ずれがあればさらに拡大）。イベント発生源側での記録が必要です。</li>
+<li><strong>稼働率を算出したい：</strong>最後の観測より後の状態は不明です。観測期間、UNKNOWN、欠測区間を定義しないまま要約CSVから停止時間を確定しないでください。</li>
+<li><strong>信頼性の高い長期運用：</strong>事前の1MiBサイズ確認はファイルの同時更新時に厳密な上限保証になりません。途中で出力に失敗すると部分ファイルが残る可能性があります。CSVの空行は不正行として拒否しますが、入力CSVが読み込み中に変更される場合の整合性は保証しません。</li>
+<li><strong>機密ログ：</strong>設備名・作業者名などを含むファイルを無断で外部公開しないでください。出力内容も元データ由来の機密情報になり得ます。</li>
+</ul></section>
+<section><h2>一次資料</h2><ul>
+<li><a href="https://docs.python.org/3/library/csv.html" rel="noopener noreferrer">Python公式：csv.reader / csv.writer / newline / strict</a></li>
+<li><a href="https://docs.python.org/3/library/datetime.html" rel="noopener noreferrer">Python公式：aware datetime / fromisoformat / astimezone</a></li>
+<li><a href="https://docs.python.org/3/library/pathlib.html" rel="noopener noreferrer">Python公式：Path.open（xモード）</a></li>
+<li><a href="https://docs.python.org/3/library/unittest.html" rel="noopener noreferrer">Python公式：unittest</a></li>
+</ul></section>
+<p><a href="csv-state-logging.html">関連：状態ログの設計</a> · <a href="csv-schema-validation.html">関連：CSVの入力検証</a> · <a href="index.html">← 記事一覧</a></p>
+</article></main><footer><div class="wrap"><p>Amazonのアソシエイトとして、電子工作とPythonの技術ノートは適格販売により収入を得ています。</p><p>広告・アフィリエイトがある記事では広告を明記します。個別商品の実使用がない場合、使用したとは表現しません。</p><p><a href="about.html">運営方針</a> · <a href="privacy.html">プライバシー</a></p><p>© 2026 電子工作とPythonの技術ノート</p></div></footer></body></html>
